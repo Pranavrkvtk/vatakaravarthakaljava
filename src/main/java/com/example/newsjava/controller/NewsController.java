@@ -8,6 +8,10 @@ import org.springframework.http.HttpStatus;
 import com.example.newsjava.model.News;
 import com.example.newsjava.repository.NewsRepository;
 
+// ✅ FIX 11: Jsoup Imports for HTML Sanitization
+import org.jsoup.Jsoup;
+import org.jsoup.safety.Safelist;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,7 +22,6 @@ import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/news")
-@CrossOrigin(origins = "http://localhost:3000")
 public class NewsController {
 
     private final NewsRepository repository;
@@ -62,7 +65,7 @@ public class NewsController {
     }
 
     // ============================================================
-    // PUBLIC USER ENDPOINTS (Only show published & scheduled-past)
+    // PUBLIC USER ENDPOINTS
     // ============================================================
 
     @GetMapping("/published")
@@ -96,7 +99,7 @@ public class NewsController {
     }
 
     // ============================================================
-    // GET NEWS BY ID - Only return if published & visible
+    // GET NEWS BY ID - Fixed NPE and Atomic Views
     // ============================================================
     @GetMapping("/{id}")
     public ResponseEntity<?> getNewsById(@PathVariable Long id) {
@@ -111,17 +114,19 @@ public class NewsController {
         
         // Check if news is publicly visible
         if (!isPubliclyVisible(news)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(Map.of(
-                        "error", "This content is not available",
-                        "status", news.getStatus(),
-                        "scheduledDate", news.getScheduledDate()
-                    ));
+            // ✅ FIX B4: Use HashMap instead of Map.of to allow null values
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("error", "This content is not available");
+            errorResponse.put("status", news.getStatus());
+            errorResponse.put("scheduledDate", news.getScheduledDate());
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(errorResponse);
         }
         
-        // Increment views
+        // ✅ FIX 13: Atomic View Increment
+        repository.incrementViews(id);
+        
+        // Update the local object so the UI sees the new count immediately
         news.setViews(news.getViews() + 1);
-        repository.save(news);
         
         return ResponseEntity.ok(news);
     }
@@ -141,8 +146,11 @@ public class NewsController {
                     .body(Map.of("error", "This content is not available"));
         }
         
+        // ✅ FIX 13: Atomic Like Increment
+        repository.incrementLikes(id);
         news.setLikes(news.getLikes() + 1);
-        return ResponseEntity.ok(repository.save(news));
+        
+        return ResponseEntity.ok(news);
     }
 
     // ============================================================
@@ -154,8 +162,6 @@ public class NewsController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size,
             @RequestParam(defaultValue = "relevance") String sortBy) {
-        
-        System.out.println("🔍 Searching news with keyword: " + keyword);
         
         List<News> allNews = repository.findByTitleContainingIgnoreCaseAndStatus(keyword, "published");
         List<News> visibleNews = filterPublicVisible(allNews);
@@ -182,8 +188,6 @@ public class NewsController {
             case "likes":
                 visibleNews.sort((a, b) -> Integer.compare(b.getLikes(), a.getLikes()));
                 break;
-            default: // relevance
-                break;
         }
         
         // Pagination
@@ -200,8 +204,6 @@ public class NewsController {
         response.put("totalPages", (int) Math.ceil((double) total / size));
         response.put("keyword", keyword != null ? keyword : "");
         
-        System.out.println("✅ Found " + total + " visible results for keyword: " + keyword);
-        
         return ResponseEntity.ok(response);
     }
 
@@ -214,14 +216,11 @@ public class NewsController {
                 .map(News::getTitle)
                 .filter(title -> title != null)
                 .limit(5)
-                .collect(Collectors.toSet());
+                .collect(Collectors.toCollection(LinkedHashSet::new));
         
         return ResponseEntity.ok(new ArrayList<>(suggestions));
     }
 
-    // ============================================================
-    // ADVANCED SEARCH - FIXED: No NullPointerException
-    // ============================================================
     @GetMapping("/search/advanced")
     public ResponseEntity<Map<String, Object>> advancedSearch(
             @RequestParam(required = false) String keyword,
@@ -233,64 +232,46 @@ public class NewsController {
             @RequestParam(defaultValue = "10") int size,
             @RequestParam(defaultValue = "latest") String sortBy) {
         
-        System.out.println("🔍 Advanced search - Keyword: " + keyword + ", Category: " + category);
-        
-        // Get all published news first
         List<News> allNews = repository.findByStatusOrderByPublishedDateDesc("published");
         List<News> visibleNews = filterPublicVisible(allNews);
         
-        // Apply filters
         List<News> filteredNews = visibleNews.stream()
                 .filter(news -> {
                     if (keyword != null && !keyword.trim().isEmpty()) {
                         String searchTerm = keyword.toLowerCase();
-                        boolean titleMatch = news.getTitle() != null && 
-                            news.getTitle().toLowerCase().contains(searchTerm);
-                        boolean contentMatch = news.getContent() != null && 
-                            news.getContent().toLowerCase().contains(searchTerm);
+                        boolean titleMatch = news.getTitle() != null && news.getTitle().toLowerCase().contains(searchTerm);
+                        boolean contentMatch = news.getContent() != null && news.getContent().toLowerCase().contains(searchTerm);
                         if (!titleMatch && !contentMatch) return false;
                     }
                     
                     if (category != null && !category.trim().isEmpty()) {
-                        if (news.getCategory() == null || 
-                            !news.getCategory().equalsIgnoreCase(category)) {
-                            return false;
-                        }
+                        if (news.getCategory() == null || !news.getCategory().equalsIgnoreCase(category)) return false;
                     }
                     
                     if (author != null && !author.trim().isEmpty()) {
-                        if (news.getAuthor() == null || 
-                            !news.getAuthor().toLowerCase().contains(author.toLowerCase())) {
-                            return false;
-                        }
+                        if (news.getAuthor() == null || !news.getAuthor().toLowerCase().contains(author.toLowerCase())) return false;
                     }
                     
-                    LocalDateTime newsDate = news.getPublishedDate() != null ? 
-                        news.getPublishedDate() : news.getCreatedAt();
+                    LocalDateTime newsDate = news.getPublishedDate() != null ? news.getPublishedDate() : news.getCreatedAt();
                         
                     if (fromDate != null && !fromDate.trim().isEmpty()) {
                         try {
                             LocalDateTime fromDateTime = LocalDateTime.parse(fromDate + "T00:00:00");
                             if (newsDate.isBefore(fromDateTime)) return false;
-                        } catch (Exception e) {
-                            // Skip invalid date
-                        }
+                        } catch (Exception e) {}
                     }
                     
                     if (toDate != null && !toDate.trim().isEmpty()) {
                         try {
                             LocalDateTime toDateTime = LocalDateTime.parse(toDate + "T23:59:59");
                             if (newsDate.isAfter(toDateTime)) return false;
-                        } catch (Exception e) {
-                            // Skip invalid date
-                        }
+                        } catch (Exception e) {}
                     }
-                    
                     return true;
                 })
                 .collect(Collectors.toList());
         
-        // Sort
+        // Sorting
         switch (sortBy) {
             case "latest":
                 filteredNews.sort((a, b) -> {
@@ -312,11 +293,8 @@ public class NewsController {
             case "likes":
                 filteredNews.sort((a, b) -> Integer.compare(b.getLikes(), a.getLikes()));
                 break;
-            default:
-                break;
         }
         
-        // Pagination
         int total = filteredNews.size();
         int start = page * size;
         int end = Math.min(start + size, total);
@@ -329,7 +307,6 @@ public class NewsController {
         response.put("size", size);
         response.put("totalPages", (int) Math.ceil((double) total / size));
         
-        // ✅ FIXED: Use HashMap instead of Map.of() to handle null values
         Map<String, Object> filters = new HashMap<>();
         filters.put("keyword", keyword != null ? keyword : "");
         filters.put("category", category != null ? category : "");
@@ -339,14 +316,11 @@ public class NewsController {
         filters.put("sortBy", sortBy != null ? sortBy : "latest");
         
         response.put("filters", filters);
-        
-        System.out.println("✅ Advanced search found " + total + " results");
-        
         return ResponseEntity.ok(response);
     }
 
     // ============================================================
-    // ADMIN ENDPOINTS (All news, no filtering)
+    // ADMIN ENDPOINTS
     // ============================================================
 
     @GetMapping("/all")
@@ -360,68 +334,41 @@ public class NewsController {
     }
 
     // ============================================================
-    // ADMIN: Auto-publish scheduled posts endpoint
-    // ============================================================
-    @PostMapping("/check-scheduled")
-    public ResponseEntity<Map<String, Object>> checkScheduledPosts() {
-        System.out.println("🔄 Checking scheduled posts...");
-        
-        List<News> scheduledNews = repository.findByStatus("scheduled");
-        LocalDateTime now = LocalDateTime.now();
-        int publishedCount = 0;
-        List<String> publishedTitles = new ArrayList<>();
-        
-        for (News news : scheduledNews) {
-            if (news.getScheduledDate() != null && 
-                (news.getScheduledDate().isBefore(now) || news.getScheduledDate().isEqual(now))) {
-                news.setStatus("published");
-                news.setPublishedDate(now);
-                news.setScheduledDate(null);
-                repository.save(news);
-                publishedCount++;
-                publishedTitles.add(news.getTitle());
-                System.out.println("✅ Auto-published: " + news.getTitle());
-            }
-        }
-        
-        Map<String, Object> response = new HashMap<>();
-        response.put("published", publishedCount);
-        response.put("titles", publishedTitles);
-        response.put("checkedAt", now);
-        
-        return ResponseEntity.ok(response);
-    }
-
-    // ============================================================
     // ADMIN: CRUD Operations
     // ============================================================
 
     @PostMapping
     public News createNews(@RequestBody News news) {
-        System.out.println("=== CREATE NEWS ===");
-        System.out.println("Title: " + news.getTitle());
-
         if (news.getStatus() == null || news.getStatus().isEmpty()) {
             news.setStatus("draft");
         }
-
         news.setViews(0);
         news.setLikes(0);
         news.setShares(0);
 
-        News saved = repository.save(news);
-        System.out.println("✅ Saved news ID: " + saved.getId());
-        return saved;
+        // ✅ FIX 11: Sanitize HTML to prevent XSS
+        if (news.getContent() != null) {
+            String cleanContent = Jsoup.clean(news.getContent(), Safelist.relaxed().addAttributes(":all", "style", "class"));
+            news.setContent(cleanContent);
+        }
+
+        return repository.save(news);
     }
 
     @PutMapping("/{id}")
     public News updateNews(@PathVariable Long id, @RequestBody News news) {
         News existing = repository.findById(id)
-                .orElseThrow(() -> new RuntimeException("News not found"));
+                .orElseThrow(() -> new NoSuchElementException("News not found"));
 
         if (news.getTitle() != null) existing.setTitle(news.getTitle());
         if (news.getSubtitle() != null) existing.setSubtitle(news.getSubtitle());
-        if (news.getContent() != null) existing.setContent(news.getContent());
+        
+        // ✅ FIX 11: Sanitize HTML before updating
+        if (news.getContent() != null) {
+            String cleanContent = Jsoup.clean(news.getContent(), Safelist.relaxed().addAttributes(":all", "style", "class"));
+            existing.setContent(cleanContent);
+        }
+        
         if (news.getCategory() != null) existing.setCategory(news.getCategory());
         if (news.getImage() != null) existing.setImage(news.getImage());
         if (news.getStatus() != null) existing.setStatus(news.getStatus());
@@ -437,10 +384,9 @@ public class NewsController {
         if (news.getLikes() > 0) existing.setLikes(news.getLikes());
         if (news.getShares() > 0) existing.setShares(news.getShares());
 
-        // Auto-set published date when status changes to published
         if ("published".equals(news.getStatus()) && existing.getPublishedDate() == null) {
             existing.setPublishedDate(LocalDateTime.now());
-            existing.setScheduledDate(null); // Clear scheduled date on publish
+            existing.setScheduledDate(null);
         }
 
         return repository.save(existing);
@@ -457,13 +403,10 @@ public class NewsController {
         String action = (String) payload.get("action");
 
         if (rawIds == null || rawIds.isEmpty()) {
-            throw new RuntimeException("No ids provided");
+            throw new IllegalArgumentException("No ids provided");
         }
 
-        List<Long> ids = rawIds.stream()
-                .map(Integer::longValue)
-                .collect(Collectors.toList());
-
+        List<Long> ids = rawIds.stream().map(Integer::longValue).collect(Collectors.toList());
         List<News> newsList = repository.findAllById(ids);
 
         for (News n : newsList) {
@@ -472,26 +415,14 @@ public class NewsController {
                     n.setStatus("published");
                     n.setPublishedDate(LocalDateTime.now());
                     n.setScheduledDate(null);
-                    repository.save(n);
                     break;
-                case "draft":
-                    n.setStatus("draft");
-                    repository.save(n);
-                    break;
-                case "trash":
-                    n.setStatus("trash");
-                    repository.save(n);
-                    break;
-                case "restore":
-                    n.setStatus("draft");
-                    repository.save(n);
-                    break;
-                case "delete":
-                    repository.delete(n);
-                    break;
-                default:
-                    throw new RuntimeException("Invalid action: " + action);
+                case "draft": n.setStatus("draft"); break;
+                case "trash": n.setStatus("trash"); break;
+                case "restore": n.setStatus("draft"); break;
+                case "delete": repository.delete(n); continue;
+                default: throw new IllegalArgumentException("Invalid action: " + action);
             }
+            repository.save(n);
         }
     }
 
@@ -501,29 +432,27 @@ public class NewsController {
 
     @PostMapping("/upload-image")
     public ResponseEntity<Map<String, Object>> uploadContentImage(@RequestParam("file") MultipartFile file) {
-        System.out.println("📸 Uploading image...");
-        
         try {
             if (file.isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of("error", "File is empty"));
             }
 
-            String contentType = file.getContentType();
-            if (contentType == null || !contentType.startsWith("image/")) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Only image files are allowed"));
+            // ✅ FIX S5 & B10: Secure File Uploads (Extension Allow-list)
+            String originalFilename = file.getOriginalFilename();
+            if (originalFilename == null || !originalFilename.contains(".")) {
+                return ResponseEntity.badRequest().body(Map.of("error", "File must have a valid extension."));
+            }
+            
+            String extension = originalFilename.substring(originalFilename.lastIndexOf(".") + 1).toLowerCase();
+            if (!List.of("jpg", "jpeg", "png", "webp").contains(extension)) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Only JPG, JPEG, PNG, and WEBP images are allowed."));
             }
 
-            long fileSize = file.getSize();
-            if (fileSize > 5 * 1024 * 1024) {
+            if (file.getSize() > 5 * 1024 * 1024) {
                 return ResponseEntity.badRequest().body(Map.of("error", "File size exceeds 5MB limit"));
             }
 
-            String originalFilename = file.getOriginalFilename();
-            String extension = "";
-            if (originalFilename != null && originalFilename.contains(".")) {
-                extension = originalFilename.substring(originalFilename.lastIndexOf("."));
-            }
-            String newFilename = UUID.randomUUID().toString() + extension;
+            String newFilename = UUID.randomUUID().toString() + "." + extension;
 
             Path filePath = Paths.get(UPLOAD_DIR, newFilename);
             Files.write(filePath, file.getBytes());
@@ -533,13 +462,11 @@ public class NewsController {
             response.put("url", imageUrl);
             response.put("success", true);
             response.put("filename", newFilename);
-            response.put("size", fileSize);
+            response.put("size", file.getSize());
 
-            System.out.println("✅ Image uploaded successfully: " + imageUrl);
             return ResponseEntity.ok(response);
             
         } catch (IOException e) {
-            System.err.println("❌ IO Error: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(Map.of("error", "Failed to upload image: " + e.getMessage()));
         }
@@ -549,80 +476,18 @@ public class NewsController {
     public ResponseEntity<byte[]> getContentImage(@PathVariable String filename) {
         try {
             Path filePath = Paths.get(UPLOAD_DIR, filename);
-            
-            if (!Files.exists(filePath)) {
-                return ResponseEntity.notFound().build();
-            }
+            if (!Files.exists(filePath)) return ResponseEntity.notFound().build();
 
             byte[] imageBytes = Files.readAllBytes(filePath);
             String contentType = Files.probeContentType(filePath);
-            if (contentType == null) {
-                contentType = "image/jpeg";
-            }
+            if (contentType == null) contentType = "image/jpeg";
 
             return ResponseEntity.ok()
                 .header("Content-Type", contentType)
                 .header("Cache-Control", "public, max-age=31536000")
                 .body(imageBytes);
-                
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
-    }
-
-    @GetMapping("/debug/images")
-    public ResponseEntity<Map<String, Object>> listUploadedImages() {
-        try {
-            Path uploadPath = Paths.get(UPLOAD_DIR);
-            List<Map<String, Object>> files = new ArrayList<>();
-            
-            if (Files.exists(uploadPath)) {
-                Files.list(uploadPath).forEach(path -> {
-                    Map<String, Object> fileInfo = new HashMap<>();
-                    fileInfo.put("name", path.getFileName().toString());
-                    try {
-                        fileInfo.put("size", Files.size(path));
-                        fileInfo.put("lastModified", Files.getLastModifiedTime(path).toString());
-                    } catch (IOException e) {
-                        fileInfo.put("error", e.getMessage());
-                    }
-                    files.add(fileInfo);
-                });
-            }
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("total", files.size());
-            response.put("files", files);
-            response.put("directory", uploadPath.toAbsolutePath().toString());
-            
-            return ResponseEntity.ok(response);
-            
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(Map.of("error", e.getMessage()));
-        }
-    }
-
-    @GetMapping("/debug/{id}")
-    public Map<String, Object> debugNews(@PathVariable Long id) {
-        News news = repository.findById(id)
-                .orElseThrow(() -> new RuntimeException("News not found"));
-        
-        Map<String, Object> debug = new HashMap<>();
-        debug.put("id", news.getId());
-        debug.put("title", news.getTitle());
-        debug.put("status", news.getStatus());
-        debug.put("scheduledDate", news.getScheduledDate());
-        debug.put("publishedDate", news.getPublishedDate());
-        debug.put("imageExists", news.getImage() != null);
-        debug.put("isPubliclyVisible", isPubliclyVisible(news));
-        
-        if (news.getImage() != null) {
-            debug.put("imageLength", news.getImage().length());
-            debug.put("imageType", news.getImage().startsWith("data:image") ? "base64" : "url");
-            debug.put("imagePreview", news.getImage().substring(0, Math.min(200, news.getImage().length())));
-        }
-        
-        return debug;
     }
 }
