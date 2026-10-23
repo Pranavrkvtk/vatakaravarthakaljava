@@ -3,6 +3,7 @@ package com.example.newsjava.service;
 import com.example.newsjava.model.User;
 import com.example.newsjava.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
@@ -16,26 +17,34 @@ public class AdminInitializer implements CommandLineRunner {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
+    // ✅ FIX 2: Read the initial password from environment variables
+    @Value("${app.admin.initial-password:}")
+    private String initialPassword;
+
     @Override
     public void run(String... args) throws Exception {
-        // Create admin user if not exists
-        if (userRepository.findByUsername("admin").isEmpty()) {
-            User admin = new User();
-            admin.setUsername("admin");
-            admin.setPassword(passwordEncoder.encode("admin123"));
-            admin.setRole("ADMIN");
-            userRepository.save(admin);
-            System.out.println("✅ Admin user created: username=admin, password=admin123");
+        // If any user exists, do nothing. (Prevents overwriting real users)
+        if (userRepository.count() > 0) {
+            return;
         }
+
+        // Check if the environment variable was actually set
+        if (initialPassword == null || initialPassword.length() < 12) {
+            throw new IllegalArgumentException(
+                "CRITICAL: You must set ADMIN_INITIAL_PASSWORD (12+ characters) for the first start."
+            );
+        }
+
+        // Create the secure admin user
+        User admin = new User();
+        admin.setUsername("admin");
+        admin.setPassword(passwordEncoder.encode(initialPassword));
+        admin.setRole("ADMIN");
+        userRepository.save(admin);
         
-        // Create a test user if not exists
-        if (userRepository.findByUsername("user").isEmpty()) {
-            User user = new User();
-            user.setUsername("user");
-            user.setPassword(passwordEncoder.encode("user123"));
-            user.setRole("USER");
-            userRepository.save(user);
-            System.out.println("✅ Test user created: username=user, password=user123");
-        }
+        System.out.println("✅ Secure admin user created from environment variable.");
+        // Notice: No password is printed to the console anymore!
+        
+        // Note: The test user 'user/user123' has been completely removed.
     }
 }

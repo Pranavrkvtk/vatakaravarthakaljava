@@ -4,7 +4,14 @@ import com.example.newsjava.model.User;
 import com.example.newsjava.repository.UserRepository;
 import com.example.newsjava.util.JwtUtil;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
@@ -17,7 +24,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/auth")
-@CrossOrigin(origins = "http://localhost:3000")
 public class AuthController {
 
     @Autowired
@@ -55,53 +61,27 @@ public class AuthController {
         response.put("message", "Login successful");
         return response;
     }
- // Add to AuthController.java - TEMPORARY ENDPOINT (Remove after use)
-    @PostMapping("/setup-admin")
-    public Map<String, String> setupAdmin() {
-        Map<String, String> response = new HashMap<>();
-        
-        // Check if admin already exists
-        if (userRepository.findByUsername("admin").isPresent()) {
-            response.put("message", "Admin already exists");
-            return response;
+
+    // --- FIX 1: SECURE USER CREATION (Replaces /register and /setup-admin) ---
+    public record CreateUserRequest(
+        @NotBlank @Size(max = 50) String username, 
+        @NotBlank @Size(min = 12, max = 100) String password
+    ) {}
+
+    @PostMapping("/users")
+    @PreAuthorize("hasRole('ADMIN')") // Only existing admins can do this
+    public ResponseEntity<?> createEditor(@Valid @RequestBody CreateUserRequest req) {
+        if (userRepository.findByUsername(req.username()).isPresent()) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of("error", "Username already exists"));
         }
+        User u = new User();
+        u.setUsername(req.username());
+        u.setPassword(passwordEncoder.encode(req.password()));
+        u.setRole("ADMIN"); // Hardcoded to ADMIN so users can't self-assign roles
         
-        // Create admin user
-        User admin = new User();
-        admin.setUsername("admin");
-        admin.setPassword(passwordEncoder.encode("admin123"));
-        admin.setRole("ADMIN");
-        userRepository.save(admin);
-        
-        response.put("message", "Admin created successfully");
-        response.put("username", "admin");
-        response.put("password", "admin1238");
-        response.put("role", "ADMIN");
-        return response;
-    }
-    @PostMapping("/register")
-    public Map<String, String> register(@RequestBody Map<String, String> request) {
-        String username = request.get("username");
-        String password = request.get("password");
-        String role = request.getOrDefault("role", "USER");
-
-        // Check if username already exists
-        if (userRepository.findByUsername(username).isPresent()) {
-            throw new RuntimeException("Username already exists");
-        }
-
-        User user = new User();
-        user.setUsername(username);
-        user.setPassword(passwordEncoder.encode(password));
-        user.setRole(role.toUpperCase());
-        
-        userRepository.save(user);
-
-        Map<String, String> response = new HashMap<>();
-        response.put("message", "User registered successfully");
-        response.put("username", username);
-        response.put("role", user.getRole());
-        return response;
+        userRepository.save(u);
+        return ResponseEntity.status(HttpStatus.CREATED).build();
     }
 
     @GetMapping("/me")
