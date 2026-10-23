@@ -1,12 +1,16 @@
 package com.example.newsjava.repository;
 
 import com.example.newsjava.model.News;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -45,4 +49,22 @@ public interface NewsRepository extends JpaRepository<News, Long> {
     @Transactional
     @Query("update News n set n.likes = n.likes + 1 where n.id = :id and n.status = 'published'")
     int incrementLikes(@Param("id") Long id);
+
+    // ===================== FIX B19: ADVANCED DATABASE SEARCH =====================
+    
+    @Query("SELECT n FROM News n WHERE n.status = 'published' " +
+           "AND (:keyword IS NULL OR LOWER(n.title) LIKE LOWER(CONCAT('%', :keyword, '%')) " +
+           "OR LOWER(n.content) LIKE LOWER(CONCAT('%', :keyword, '%'))) " +
+           "AND (:category IS NULL OR n.category = :category) " +
+           "AND (:author IS NULL OR LOWER(n.author) LIKE LOWER(CONCAT('%', :author, '%'))) " +
+           "AND (:fromDate IS NULL OR n.publishedDate >= :fromDate) " +
+           "AND (:toDate IS NULL OR n.publishedDate <= :toDate)")
+    Page<News> advancedSearch(
+        @Param("keyword") String keyword,
+        @Param("category") String category,
+        @Param("author") String author,
+        @Param("fromDate") LocalDateTime fromDate,
+        @Param("toDate") LocalDateTime toDate,
+        Pageable pageable
+    );
 }

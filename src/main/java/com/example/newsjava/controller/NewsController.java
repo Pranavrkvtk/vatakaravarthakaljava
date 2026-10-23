@@ -12,6 +12,13 @@ import com.example.newsjava.repository.NewsRepository;
 import org.jsoup.Jsoup;
 import org.jsoup.safety.Safelist;
 
+// ✅ FIX B19: Pagination Imports
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.transaction.annotation.Transactional;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -88,7 +95,8 @@ public class NewsController {
 
     @GetMapping("/trending")
     public List<News> getTrendingNews() {
-        List<News> news = repository.findTop10ByOrderByViewsDesc();
+        // ✅ FIX B9: Changed from OrderByCreatedAtDesc to OrderByViewsDesc
+        List<News> news = repository.findTop10ByStatusOrderByViewsDesc("published");
         return filterPublicVisible(news);
     }
 
@@ -221,6 +229,9 @@ public class NewsController {
         return ResponseEntity.ok(new ArrayList<>(suggestions));
     }
 
+    // ============================================================
+    // ADVANCED SEARCH - FIX B19 (Database Driven)
+    // ============================================================
     @GetMapping("/search/advanced")
     public ResponseEntity<Map<String, Object>> advancedSearch(
             @RequestParam(required = false) String keyword,
@@ -231,81 +242,32 @@ public class NewsController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size,
             @RequestParam(defaultValue = "latest") String sortBy) {
-        
-        List<News> allNews = repository.findByStatusOrderByPublishedDateDesc("published");
-        List<News> visibleNews = filterPublicVisible(allNews);
-        
-        List<News> filteredNews = visibleNews.stream()
-                .filter(news -> {
-                    if (keyword != null && !keyword.trim().isEmpty()) {
-                        String searchTerm = keyword.toLowerCase();
-                        boolean titleMatch = news.getTitle() != null && news.getTitle().toLowerCase().contains(searchTerm);
-                        boolean contentMatch = news.getContent() != null && news.getContent().toLowerCase().contains(searchTerm);
-                        if (!titleMatch && !contentMatch) return false;
-                    }
-                    
-                    if (category != null && !category.trim().isEmpty()) {
-                        if (news.getCategory() == null || !news.getCategory().equalsIgnoreCase(category)) return false;
-                    }
-                    
-                    if (author != null && !author.trim().isEmpty()) {
-                        if (news.getAuthor() == null || !news.getAuthor().toLowerCase().contains(author.toLowerCase())) return false;
-                    }
-                    
-                    LocalDateTime newsDate = news.getPublishedDate() != null ? news.getPublishedDate() : news.getCreatedAt();
-                        
-                    if (fromDate != null && !fromDate.trim().isEmpty()) {
-                        try {
-                            LocalDateTime fromDateTime = LocalDateTime.parse(fromDate + "T00:00:00");
-                            if (newsDate.isBefore(fromDateTime)) return false;
-                        } catch (Exception e) {}
-                    }
-                    
-                    if (toDate != null && !toDate.trim().isEmpty()) {
-                        try {
-                            LocalDateTime toDateTime = LocalDateTime.parse(toDate + "T23:59:59");
-                            if (newsDate.isAfter(toDateTime)) return false;
-                        } catch (Exception e) {}
-                    }
-                    return true;
-                })
-                .collect(Collectors.toList());
-        
-        // Sorting
-        switch (sortBy) {
-            case "latest":
-                filteredNews.sort((a, b) -> {
-                    LocalDateTime dateA = a.getPublishedDate() != null ? a.getPublishedDate() : a.getCreatedAt();
-                    LocalDateTime dateB = b.getPublishedDate() != null ? b.getPublishedDate() : b.getCreatedAt();
-                    return dateB.compareTo(dateA);
-                });
-                break;
-            case "oldest":
-                filteredNews.sort((a, b) -> {
-                    LocalDateTime dateA = a.getPublishedDate() != null ? a.getPublishedDate() : a.getCreatedAt();
-                    LocalDateTime dateB = b.getPublishedDate() != null ? b.getPublishedDate() : b.getCreatedAt();
-                    return dateA.compareTo(dateB);
-                });
-                break;
-            case "views":
-                filteredNews.sort((a, b) -> Integer.compare(b.getViews(), a.getViews()));
-                break;
-            case "likes":
-                filteredNews.sort((a, b) -> Integer.compare(b.getLikes(), a.getLikes()));
-                break;
-        }
-        
-        int total = filteredNews.size();
-        int start = page * size;
-        int end = Math.min(start + size, total);
-        List<News> paginatedNews = start < total ? filteredNews.subList(start, end) : new ArrayList<>();
-        
+
+        // Parse dates safely
+        LocalDateTime fromDateTime = null;
+        LocalDateTime toDateTime = null;
+        try { if (fromDate != null && !fromDate.isEmpty()) fromDateTime = LocalDateTime.parse(fromDate + "T00:00:00"); } catch (Exception e) {}
+        try { if (toDate != null && !toDate.isEmpty()) toDateTime = LocalDateTime.parse(toDate + "T23:59:59"); } catch (Exception e) {}
+
+        // Map sortBy to Spring Data Sort
+        Sort sort = Sort.by("publishedDate").descending(); // default latest
+        if ("oldest".equals(sortBy)) sort = Sort.by("publishedDate").ascending();
+        else if ("views".equals(sortBy)) sort = Sort.by("views").descending();
+        else if ("likes".equals(sortBy)) sort = Sort.by("likes").descending();
+
+        Pageable pageable = PageRequest.of(page, size, sort);
+
+        // Query database directly using the new repository method
+        Page<News> results = repository.advancedSearch(
+            keyword, category, author, fromDateTime, toDateTime, pageable
+        );
+
         Map<String, Object> response = new HashMap<>();
-        response.put("news", paginatedNews);
-        response.put("total", total);
+        response.put("news", results.getContent());
+        response.put("total", results.getTotalElements());
+        response.put("totalPages", results.getTotalPages());
         response.put("page", page);
         response.put("size", size);
-        response.put("totalPages", (int) Math.ceil((double) total / size));
         
         Map<String, Object> filters = new HashMap<>();
         filters.put("keyword", keyword != null ? keyword : "");
@@ -316,6 +278,7 @@ public class NewsController {
         filters.put("sortBy", sortBy != null ? sortBy : "latest");
         
         response.put("filters", filters);
+        
         return ResponseEntity.ok(response);
     }
 
@@ -398,6 +361,7 @@ public class NewsController {
     }
 
     @PostMapping("/bulk")
+    @Transactional // ✅ FIX B17: Ensures all-or-nothing database transactions
     public void bulkAction(@RequestBody Map<String, Object> payload) {
         List<Integer> rawIds = (List<Integer>) payload.get("ids");
         String action = (String) payload.get("action");
