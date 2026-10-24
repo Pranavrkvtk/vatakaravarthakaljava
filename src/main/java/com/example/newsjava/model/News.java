@@ -18,14 +18,17 @@ public class News {
     private String title;
     private String subtitle;
 
-    @Column(columnDefinition = "LONGTEXT")  // Changed from TEXT to LONGTEXT for larger images
+    @Column(columnDefinition = "TEXT")   // was LONGTEXT — Postgres has no LONGTEXT
     private String content;
 
     private String category;
-    
-    @Column(columnDefinition = "LONGTEXT")  // Changed from TEXT to LONGTEXT for image data
+
+    @Column(columnDefinition = "TEXT")   // was LONGTEXT
     private String image;
-    
+
+    // NEW: thumbnail URL for list responses (audit Fix 5)
+    private String thumbnailUrl;
+
     private String status;          // draft, pending, published, scheduled, trash
     private String tags;
     private String author;
@@ -91,6 +94,8 @@ public class News {
     public void setCategory(String category) { this.category = category; }
     public String getImage() { return image; }
     public void setImage(String image) { this.image = image; }
+    public String getThumbnailUrl() { return thumbnailUrl; }
+    public void setThumbnailUrl(String thumbnailUrl) { this.thumbnailUrl = thumbnailUrl; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
     public String getTags() { return tags; }

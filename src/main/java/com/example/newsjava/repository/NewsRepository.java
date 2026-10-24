@@ -1,6 +1,8 @@
 package com.example.newsjava.repository;
 
 import com.example.newsjava.model.News;
+import com.example.newsjava.model.NewsSummary;
+
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -16,16 +18,22 @@ import java.util.List;
 @Repository
 public interface NewsRepository extends JpaRepository<News, Long> {
 
-    // ===================== PUBLIC QUERIES =====================
+    // ===================== PUBLIC QUERIES (Paginated & Summary Only) =====================
     
-    List<News> findByStatusOrderByPublishedDateDesc(String status);
-    List<News> findTop10ByStatusOrderByPublishedDateDesc(String status);
-    List<News> findByBreakingNewsTrueAndStatus(String status);
-    List<News> findByCategoryAndStatus(String category, String status);
-    List<News> findByTitleContainingIgnoreCaseAndStatus(String keyword, String status);
-    
-    // ✅ FIX B9: Filter by status in the query, not in memory
-    List<News> findTop10ByStatusOrderByViewsDesc(String status);
+    @Query("SELECT n FROM News n WHERE n.status = 'published' AND (n.scheduledDate IS NULL OR n.scheduledDate <= :now)")
+    Page<NewsSummary> findPublishedNews(@Param("now") LocalDateTime now, Pageable pageable);
+
+    @Query("SELECT n FROM News n WHERE n.status = 'published' AND (n.scheduledDate IS NULL OR n.scheduledDate <= :now) ORDER BY n.publishedDate DESC")
+    List<NewsSummary> findTop10LatestNews(@Param("now") LocalDateTime now, Pageable pageable);
+
+    @Query("SELECT n FROM News n WHERE n.status = 'published' AND n.breakingNews = true AND (n.scheduledDate IS NULL OR n.scheduledDate <= :now)")
+    List<NewsSummary> findBreakingNews(@Param("now") LocalDateTime now);
+
+    @Query("SELECT n FROM News n WHERE n.status = 'published' AND (n.scheduledDate IS NULL OR n.scheduledDate <= :now) ORDER BY n.views DESC")
+    List<NewsSummary> findTop10TrendingNews(@Param("now") LocalDateTime now, Pageable pageable);
+
+    @Query("SELECT n FROM News n WHERE n.status = 'published' AND n.category = :category AND (n.scheduledDate IS NULL OR n.scheduledDate <= :now)")
+    Page<NewsSummary> findNewsByCategory(@Param("category") String category, @Param("now") LocalDateTime now, Pageable pageable);
 
     // ===================== ADMIN QUERIES =====================
     
@@ -53,13 +61,12 @@ public interface NewsRepository extends JpaRepository<News, Long> {
     // ===================== FIX B19: ADVANCED DATABASE SEARCH =====================
     
     @Query("SELECT n FROM News n WHERE n.status = 'published' " +
-           "AND (:keyword IS NULL OR LOWER(n.title) LIKE LOWER(CONCAT('%', :keyword, '%')) " +
-           "OR LOWER(n.content) LIKE LOWER(CONCAT('%', :keyword, '%'))) " +
+           "AND (:keyword IS NULL OR LOWER(n.title) LIKE LOWER(CONCAT('%', :keyword, '%'))) " +
            "AND (:category IS NULL OR n.category = :category) " +
            "AND (:author IS NULL OR LOWER(n.author) LIKE LOWER(CONCAT('%', :author, '%'))) " +
            "AND (:fromDate IS NULL OR n.publishedDate >= :fromDate) " +
            "AND (:toDate IS NULL OR n.publishedDate <= :toDate)")
-    Page<News> advancedSearch(
+    Page<NewsSummary> advancedSearch(
         @Param("keyword") String keyword,
         @Param("category") String category,
         @Param("author") String author,
@@ -67,4 +74,14 @@ public interface NewsRepository extends JpaRepository<News, Long> {
         @Param("toDate") LocalDateTime toDate,
         Pageable pageable
     );
+
+    // ===================== NEW: SCHEDULER QUERY =====================
+    
+    @Modifying
+    @Transactional
+    @Query("UPDATE News n SET n.status = 'published', n.published = true, " +
+           "n.publishedDate = n.scheduledDate, n.scheduledDate = null " +
+           "WHERE n.status = 'scheduled' AND n.scheduledDate <= :now")
+    int publishDueNews(@Param("now") LocalDateTime now);
+    
 }

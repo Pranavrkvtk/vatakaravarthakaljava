@@ -4,6 +4,7 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.io.Decoders; // ✅ ADDED
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -18,19 +19,28 @@ import java.util.function.Function;
 @Component
 public class JwtUtil {
 
-    @Value("${jwt.secret:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}")
+    // ✅ FIXED (C3/S3): Removed the hardcoded default secret.
+    @Value("${jwt.secret}")
     private String secret;
 
-    @Value("${jwt.expiration:604800}") // Changed to 7 days (604800 seconds)
+    // ✅ FIXED (C3/S3): Removed the 7-day default. Now reads strictly from config.
+    @Value("${jwt.expiration}")
     private Long expiration;
 
     private Key getSigningKey() {
-        byte[] keyBytes = secret.getBytes();
+        // ✅ FIXED: Properly decode the Base64 secret from the environment
+        byte[] keyBytes = Decoders.BASE64.decode(secret);
         return Keys.hmacShaKeyFor(keyBytes);
     }
 
-    public String generateToken(String username) {
+    /**
+     * Generates a JWT that carries the user's role as a claim.
+     * The frontend (ProtectedRoute.jsx) reads decoded.role and compares
+     * it to 'ADMIN', so the value passed here must match exactly.
+     */
+    public String generateToken(String username, String role) {
         Map<String, Object> claims = new HashMap<>();
+        claims.put("role", role);
         return createToken(claims, username);
     }
 
@@ -49,16 +59,21 @@ public class JwtUtil {
             final String username = extractUsername(token);
             return (username.equals(userDetails.getUsername()) && !isTokenExpired(token));
         } catch (ExpiredJwtException e) {
-            // Token expired
             return false;
         } catch (Exception e) {
-            // Other validation errors
             return false;
         }
     }
 
     public String extractUsername(String token) throws ExpiredJwtException {
         return extractClaim(token, Claims::getSubject);
+    }
+
+    /**
+     * Reads the role claim back out of a token.
+     */
+    public String extractRole(String token) {
+        return extractClaim(token, claims -> claims.get("role", String.class));
     }
 
     public Date extractExpiration(String token) {
@@ -73,7 +88,7 @@ public class JwtUtil {
     private Claims extractAllClaims(String token) {
         return Jwts.parserBuilder()
                 .setSigningKey(getSigningKey())
-                .setAllowedClockSkewSeconds(300) // ADDED: Allow 5 minutes clock skew
+                .setAllowedClockSkewSeconds(300)
                 .build()
                 .parseClaimsJws(token)
                 .getBody();

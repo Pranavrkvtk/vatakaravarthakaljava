@@ -48,15 +48,16 @@ public class AuthController {
         );
 
         UserDetails userDetails = (UserDetails) authentication.getPrincipal();
-        String token = jwtUtil.generateToken(userDetails.getUsername());
 
-        // Get user from database to get role
-        User user = userRepository.findByUsername(username)
+        User user = userRepository.findByUsername(userDetails.getUsername())
                 .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // Role is now embedded in the JWT — ProtectedRoute.jsx reads it from decoded.role
+        String token = jwtUtil.generateToken(user.getUsername(), user.getRole());
 
         Map<String, String> response = new HashMap<>();
         response.put("token", token);
-        response.put("username", userDetails.getUsername());
+        response.put("username", user.getUsername());
         response.put("role", user.getRole());
         response.put("message", "Login successful");
         return response;
@@ -64,12 +65,12 @@ public class AuthController {
 
     // --- FIX 1: SECURE USER CREATION (Replaces /register and /setup-admin) ---
     public record CreateUserRequest(
-        @NotBlank @Size(max = 50) String username, 
+        @NotBlank @Size(max = 50) String username,
         @NotBlank @Size(min = 12, max = 100) String password
     ) {}
 
     @PostMapping("/users")
-    @PreAuthorize("hasRole('ADMIN')") // Only existing admins can do this
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> createEditor(@Valid @RequestBody CreateUserRequest req) {
         if (userRepository.findByUsername(req.username()).isPresent()) {
             return ResponseEntity.status(HttpStatus.CONFLICT)
@@ -78,8 +79,7 @@ public class AuthController {
         User u = new User();
         u.setUsername(req.username());
         u.setPassword(passwordEncoder.encode(req.password()));
-        u.setRole("ADMIN"); // Hardcoded to ADMIN so users can't self-assign roles
-        
+        u.setRole("ADMIN");
         userRepository.save(u);
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }
@@ -89,16 +89,16 @@ public class AuthController {
         if (authentication == null || !authentication.isAuthenticated()) {
             throw new RuntimeException("Not authenticated");
         }
-        
+
         String username = authentication.getName();
         User user = userRepository.findByUsername(username)
                 .orElseThrow(() -> new RuntimeException("User not found"));
-        
+
         Map<String, Object> response = new HashMap<>();
         response.put("id", user.getId());
         response.put("username", user.getUsername());
         response.put("role", user.getRole());
-        
+
         return response;
     }
 }
