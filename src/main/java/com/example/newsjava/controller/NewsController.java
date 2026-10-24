@@ -5,9 +5,9 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.CacheControl; // ✅ Added for caching
+import org.springframework.http.CacheControl;
 import com.example.newsjava.model.News;
-import com.example.newsjava.model.NewsSummary; // ✅ Added
+import com.example.newsjava.model.NewsSummary;
 import com.example.newsjava.repository.NewsRepository;
 
 import org.jsoup.Jsoup;
@@ -19,15 +19,18 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.transaction.annotation.Transactional;
 
+import lombok.extern.slf4j.Slf4j; // ✅ ADDED for SLF4J logging
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.TimeUnit; // ✅ Added for CacheControl
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+@Slf4j // ✅ ADDED
 @RestController
 @RequestMapping("/api/news")
 public class NewsController {
@@ -39,9 +42,7 @@ public class NewsController {
         this.repository = repository;
         try {
             Files.createDirectories(Paths.get(UPLOAD_DIR));
-            System.out.println("✅ Upload directory created: " + UPLOAD_DIR);
         } catch (IOException e) {
-            System.err.println("❌ Could not create upload directory: " + e.getMessage());
         }
     }
 
@@ -145,8 +146,24 @@ public class NewsController {
     }
 
     // ============================================================
-    // ADVANCED SEARCH (Now Database-Driven Pagination)
+    // SEARCH API (Suggestions & Advanced)
     // ============================================================
+    
+    @GetMapping("/search/suggestions")
+    public ResponseEntity<List<String>> getSearchSuggestions(@RequestParam String prefix) {
+        // Limit to top 5 results for the dropdown
+        Pageable top5 = PageRequest.of(0, 5, Sort.by("publishedDate").descending());
+        Page<NewsSummary> results = repository.advancedSearch(prefix, null, null, null, null, top5);
+        
+        List<String> suggestions = results.getContent().stream()
+                .map(NewsSummary::getTitle)
+                .filter(Objects::nonNull) // Ensure no null titles
+                .distinct()
+                .collect(Collectors.toList());
+                
+        return ResponseEntity.ok(suggestions);
+    }
+
     @GetMapping("/search/advanced")
     public ResponseEntity<Map<String, Object>> advancedSearch(
             @RequestParam(required = false) String keyword,

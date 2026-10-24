@@ -101,4 +101,32 @@ public class AuthController {
 
         return response;
     }
+
+    // --- NEW: CHANGE PASSWORD ENDPOINT ---
+    public record ChangePasswordRequest(
+        @NotBlank String oldPassword,
+        @NotBlank @Size(min = 12, max = 100) String newPassword
+    ) {}
+
+    @PutMapping("/password")
+    public ResponseEntity<?> changePassword(@Valid @RequestBody ChangePasswordRequest req, Authentication authentication) {
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Not authenticated"));
+        }
+
+        // 1. Find the currently logged-in user
+        User user = userRepository.findByUsername(authentication.getName())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // 2. Check if the old password matches
+        if (!passwordEncoder.matches(req.oldPassword(), user.getPassword())) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", "Incorrect current password"));
+        }
+
+        // 3. Update to the new password
+        user.setPassword(passwordEncoder.encode(req.newPassword()));
+        userRepository.save(user);
+
+        return ResponseEntity.ok(Map.of("message", "Password updated successfully"));
+    }
 }
